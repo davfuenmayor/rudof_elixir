@@ -1,0 +1,467 @@
+# Getting Started
+
+```elixir
+Mix.install([
+  {:rudof_elixir, path: Path.expand("..", __DIR__)},
+  {:kino, "== 0.19.0"}
+])
+```
+
+## Introduction
+
+This notebook teaches you how to use **the Elixir wrapper**: which API to choose,
+what functions return, how to manage native state, and how to handle errors. For
+RDF, SPARQL, ShEx and SHACL themselves, start with the
+[Rudof tutorial](rudof-tutorial/intro.livemd). Here we use those languages only
+as small, concrete inputs to the wrapper.
+
+Rudof does the parsing, querying, conversion and validation in Rust. The wrapper
+provides Elixir functions, tagged results and process-owned sessions. You pass
+upstream source text and options; there is no separate Elixir query language or
+schema model to learn.
+
+Evaluate this notebook from top to bottom in a local Livebook runtime. Setup
+installs the library from this checkout and Kino for tables and diagrams. The
+first build needs network access, Elixir 1.19+, Erlang/OTP, Rust 1.91 or newer and
+the native build dependencies listed in the repo's __README.md__.
+The examples themselves use local data and make no endpoint requests.
+
+Namespace declarations are collected in the setup cell. The `*_prefixes`
+variables below are ordinary strings joined with `<>`; they just keep repeated
+URLs out of the examples.
+
+```elixir
+alias Rudof.{Error, Session, Visualization}
+
+# Keep namespace declarations out of the examples below.
+namespace = "http://example.org/"
+turtle_prefixes = "@prefix : <#{namespace}> .\n"
+sparql_prefixes = "PREFIX : <#{namespace}>\n"
+shex_prefixes = "PREFIX : <#{namespace}>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
+```
+
+## Start with an independent operation
+
+Imagine an application that needs a contact list for a project's maintainers.
+Alice has an email address; Bob does not yet have one.
+
+```elixir
+data = turtle_prefixes <> """
+:rudof_elixir :name "Rudof Elixir" ;
+  :maintainer :alice, :bob .
+:alice :name "Alice" ; :email "alice@example.org" ; :skill "Elixir" .
+:bob :name "Bob" ; :skill "Rust" .
+"""
+
+contacts_query = sparql_prefixes <> """
+SELECT ?name ?email WHERE {
+  :rudof_elixir :maintainer ?person .
+  ?person :name ?name .
+  OPTIONAL { ?person :email ?email }
+}
+ORDER BY ?name
+"""
+
+{:ok, contacts} = Rudof.query(data, contacts_query)
+contacts
+```
+
+`Rudof.query/3` creates a fresh session, loads the data, executes the query and
+closes the session for you. Use the `Rudof` functions for independent jobs:
+`query/3`, `convert/4`, `validate_shex/4` and `validate_shacl/3` each manage their
+own session. State does not carry from one call to the next.
+
+## Read results as Elixir values
+
+SELECT results contain variable names without `?` and aligned lists of values.
+Those values are **RDF term strings**, not decoded Elixir strings or numbers.
+For example, Alice's name is the string `"\"Alice\""`, including the RDF literal's
+quotes. Datatypes and language tags are retained too. An unbound value, such as
+Bob's email, is `nil`.
+
+```elixir
+%{kind: :select, variables: ["name", "email"], rows: [alice, bob]} = contacts
+
+%{alice: alice, bob: bob}
+```
+
+`Visualization.table_data/1` converts aligned rows into maps for a table renderer.
+It preserves the original term strings and `nil` values.
+
+```elixir
+Kino.DataTable.new(Visualization.table_data(contacts))
+```
+
+The result's `kind` tells you which shape to expect:
+
+| Query                 | Result                                            |
+| --------------------- | ------------------------------------------------- |
+| SELECT                | `%{kind: :select, variables: [...], rows: [...]}` |
+| ASK                   | `%{kind: :ask, boolean: true_or_false}`           |
+| CONSTRUCT or DESCRIBE | `%{kind: :graph, graph: turtle_text}`             |
+
+The pinned upstream discards projection names for an empty SELECT result, so
+both `variables` and `rows` are empty in that case. SPARQL UPDATE is unsupported.
+A graph query returns serialized text; it does not replace the session's data.
+
+## Use `Session.with_session` for a complete workflow
+
+Suppose one job needs to load data, query it, and export it. Put those steps in
+`Session.with_session/2` to reuse native state and guarantee cleanup.
+
+```elixir
+bundle =
+  Session.with_session(fn session ->
+    with :ok <- Session.read_data(session, data),
+         {:ok, contacts} <- Session.query(session, contacts_query),
+         {:ok, ntriples} <- Session.serialize_data(session, :ntriples) do
+      %{contacts: contacts, ntriples: ntriples}
+    end
+  end)
+
+Map.keys(bundle)
+```
+
+The callback receives a fresh session. `with_session` returns **the callback's
+value directly**: here it is a map, not `{:ok, map}`. The Elixir `with` inside the
+callback stops at the first tagged error and returns that error instead.
+If creating the session fails, `with_session` also returns `{:error, error}`.
+
+The session closes when the callback finishes, including when it returns an
+error, raises, throws or exits. Exceptions still propagate; cleanup does not
+turn them into successful results. Returned strings and maps remain usable
+after closing, so the exported data is safe to use here:
+
+```elixir
+Kino.Text.new(bundle.ntriples)
+```
+
+Prefer `with_session` for request handlers, imports and background jobs. Keep
+all the work that needs the session inside its callback. Returning the session
+handle would give the caller an already-closed session.
+
+## Keep a session across notebook cells
+
+For interactive work, create a session explicitly. This lets later cells reuse
+the same graph, schemas and query results.
+
+```elixir
+session = Session.new!()
+:ok = Session.add_prefix(session, "", namespace)
+:ok = Session.read_data(session, data)
+{:ok, contacts} = Session.query(session, contacts_query)
+Kino.DataTable.new(Visualization.table_data(contacts))
+```
+
+`Session.new/1` returns `{:ok, session}` or `{:error, %Rudof.Error{}}`.
+`Session.new!/1` raises if creation fails. The bang form is convenient in a
+notebook where an unexpected setup failure should stop evaluation.
+
+`Session.add_prefix(session, "", namespace)` registers the default namespace
+for subsequent reads and selectors. This lets the validation example below
+use the compact selector `:bob@:Maintainer` without repeating full URLs.
+
+The handle refers to **mutable native state**. Assigning it to another variable
+shares that state; it does not copy the graph. `Session.query/2` runs a query
+and also stores its result. You can export the last result without running the
+query again:
+
+```elixir
+{:ok, csv} = Session.serialize_query_results(session, :csv)
+Kino.Text.new(csv)
+```
+
+If you need to manage execution stages separately, use `load_sparql_query/3`,
+`run_query/2`, and `query_results/1`. The last function retrieves the stored
+result rather than executing a query.
+
+## Treat validation reports as successful results
+
+Our application expects every maintainer to have a name and email. Load that
+rule and select Bob for validation:
+
+```elixir
+schema = shex_prefixes <> """
+:Maintainer {
+  :name xsd:string ;
+  :email xsd:string
+}
+"""
+
+:ok = Session.read_shex(session, schema)
+:ok = Session.read_shapemap(session, ":bob@:Maintainer")
+{:ok, before_repair} = Session.validate_shex(session)
+
+%{conforms: before_repair.conforms, entries: before_repair.entries}
+```
+
+The operation succeeds with `{:ok, report}` even though Bob fails the rule.
+Check `report.conforms` and the individual `report.entries` to decide what your
+application should do. A parsing or execution failure instead returns
+`{:error, %Rudof.Error{}}`. SHACL validation follows the same distinction, with
+its own report fields.
+
+Check the selected nodes too: an empty ShEx validation report is vacuously
+conformant. A `true` flag alone does not prove that any node was validated.
+
+## Add data and validate again
+
+Reads **merge by default**, following upstream Rudof. Add Bob's email; the
+existing project and maintainer facts remain in the graph.
+
+```elixir
+:ok = Session.read_data(session, turtle_prefixes <> ~s(:bob :email "bob@example.org" .))
+{:ok, after_repair} = Session.validate_shex(session)
+{:ok, updated_contacts} = Session.query(session, contacts_query)
+
+true = after_repair.conforms
+Kino.DataTable.new(Visualization.table_data(updated_contacts))
+```
+
+`before_repair` is an ordinary Elixir value and still describes the earlier
+validation. Changing session state does not update values you already received.
+Run the operation again to obtain a new report or query result.
+
+## Visualize native output
+
+Diagrams come from Rudof's native PlantUML serializer. `Visualization` adapts the
+supported generated forms to Mermaid so Livebook can display them directly.
+It does not reconstruct the graph by querying triples in Elixir.
+
+```elixir
+{:ok, diagram} = Visualization.data_to_mermaid(session)
+Kino.Mermaid.new(diagram)
+```
+
+For a schema diagram, pass Rudof's generated PlantUML to the adapter explicitly:
+
+```elixir
+{:ok, plantuml} = Session.serialize_shex_schema(session, :plantuml)
+{:ok, diagram} = Visualization.plantuml_to_mermaid(plantuml)
+Kino.Mermaid.new(diagram)
+```
+
+These Mermaid examples need no external image renderer. The adapter supports a
+focused subset of Rudof output and returns an error for unsupported forms.
+Native SVG/PNG operations have separate renderer requirements described in
+[API coverage](../API_COVERAGE.md).
+
+## Choose text, file or URL inputs explicitly
+
+`read_data/3` reads **source text**. Passing a filename string will try to parse
+the filename as RDF. The general `load_data/3` API takes a list of explicit
+inputs: source strings, `{:string, text}`, `{:file, path}`, or `{:url, url}`.
+It also merges by default.
+
+Here a separate, short-lived session loads a temporary file. File creation is
+just to make the example self-contained; an application would use its own path.
+
+```elixir
+data_path = Path.join(System.tmp_dir!(), "rudof-data-#{System.unique_integer([:positive])}.ttl")
+File.write!(data_path, data)
+
+try do
+  Session.with_session(fn file_session ->
+    with :ok <- Session.load_data(file_session, [{:file, data_path}], format: :turtle) do
+      Session.query(file_session, contacts_query)
+    end
+  end)
+after
+  File.rm!(data_path)
+end
+```
+
+Formats are atoms such as `:turtle`, `:ntriples` and `:jsonld`. The one-off helpers
+use `data_format:`; session loading uses `format:`. For relative IRIs, supply
+an explicit `base:` when loading. Without custom configuration, Rudof's automatic
+base is `http://base`.
+
+For remote SPARQL, attach an endpoint with `Session.read_endpoint/2`, then query
+through the same session API. Those calls really contact the service; see the
+[SPARQL tutorial](rudof-tutorial/sparql.livemd) for runnable endpoint examples.
+Remote inputs, schema imports and JSON-LD contexts can also perform network
+access through upstream Rust.
+
+## Replace or reset state deliberately
+
+Use `merge: false` when a new input should replace the graph. This replaces RDF
+data, not the loaded schema or ShapeMap.
+
+```elixir
+replacement = turtle_prefixes <> ~s(:carol :name "Carol" .)
+:ok = Session.read_data(session, replacement, merge: false)
+
+{:ok, %{boolean: false}} =
+  Session.query(session, sparql_prefixes <> "ASK { :bob :email ?email }")
+```
+
+`Session.reset(session, :data)` clears data. `Session.reset(session)` clears
+all native working state while retaining configuration. Other targets include
+`:shex`, `:shacl` and `:shapemap`; granular reset functions mirror upstream too.
+
+The pinned in-memory backend stores one graph: loading TriG or N-Quads flattens
+named graphs into the default graph. Keep this limitation in mind if your input
+requires dataset-preserving processing.
+
+## Configure sessions using upstream settings
+
+Most examples need only `Session.new!()`. For customization, supply exactly one
+of `config: keywords`, `toml_str: text`, or `path: filename`. The same options
+work as the second argument to `with_session` and on the one-off query and
+validation helpers.
+
+Keyword configuration is often the most convenient Elixir form:
+
+```elixir
+settings = [base_iri: "https://example.org/"]
+
+{:ok, config_json} = Session.with_session(&Session.config/1, config: settings)
+JSON.decode!(config_json) |> Map.take(["base_iri"])
+```
+
+Configuration names and enum strings belong to **upstream Rudof**. Nested
+keyword lists represent TOML tables; ordinary lists represent arrays. The wrapper
+encodes these values and Rust parses and validates the configuration.
+
+Use TOML text when you already have configuration in the upstream format:
+
+```elixir
+toml = "base_iri = 'https://example.org/'\n"
+
+{:ok, config_json} = Session.with_session(&Session.config/1, toml_str: toml)
+JSON.decode!(config_json) |> Map.take(["base_iri"])
+```
+
+Or load an existing TOML file. This example creates a temporary one and removes
+it afterward:
+
+```elixir
+config_path = Path.join(System.tmp_dir!(), "rudof-config-#{System.unique_integer([:positive])}.toml")
+File.write!(config_path, toml)
+
+try do
+  {:ok, config_json} = Session.with_session(&Session.config/1, path: config_path)
+  JSON.decode!(config_json) |> Map.take(["base_iri"])
+after
+  File.rm!(config_path)
+end
+```
+
+For a persistent session, the corresponding calls are
+`Session.new!(config: settings)`, `Session.new!(toml_str: toml)` and
+`Session.new!(path: config_path)` with an existing TOML file.
+Configuration and per-operation options are separate: `config:` customizes a
+session, while options such as `format:` customize one operation.
+
+Some advanced getters and serializers return **JSON text**, as `config/1` does.
+Decode it with `JSON.decode/1` or `JSON.decode!/1` when you need Elixir maps.
+Functions that return `Rudof.Object` provide immutable native snapshots; inspect
+those with `Rudof.Object.text/2`. The function documentation specifies its result
+representation.
+
+## Handle errors without losing the distinction
+
+Mutating reads return `:ok`; functions producing a value generally return
+`{:ok, value}`. Fallible operations return `{:error, %Rudof.Error{kind: kind,
+message: message}}`. Pattern matching is useful when a failure should stop a
+notebook; application code can branch on the error kind.
+
+```elixir
+case Session.read_data(session, "not Turtle") do
+  :ok ->
+    "Loaded"
+
+  {:error, %Error{kind: kind, message: message}} ->
+    %{kind: kind, message: message}
+end
+```
+
+Unknown options, duplicate keyword keys and invalid argument types are rejected
+before native execution. This catches misspelled settings instead of ignoring
+them:
+
+```elixir
+{:error, %Error{kind: :invalid_argument}} =
+  Session.read_data(session, data, formatt: :turtle)
+
+{:error, %Error{kind: :invalid_argument}} =
+  Session.read_data(session, data, merge: true, merge: false)
+```
+
+An ordinary parsing error leaves the session open, although failed upstream
+operations can partially change state. Reset or recreate the session before
+retrying if your workflow needs a clean starting point. A caught native panic
+or poisoned resource closes the session automatically. Upstream features that
+are not implemented return structured errors; check
+[API coverage](../API_COVERAGE.md) for their limits.
+
+## Close sessions and understand ownership
+
+Our interactive session has finished. Closing releases native state and stops
+its private process. Closing again is harmless, and every copy of the handle
+becomes closed together:
+
+```elixir
+same_session = session
+:ok = Session.close(session)
+:ok = Session.close(session)
+{:error, %Error{kind: :closed}} = Session.query(same_session, contacts_query)
+```
+
+A session belongs to the process that created it. Other processes may borrow it
+while its creator lives, but the session closes when that creator exits,
+including a normal exit. Create shared sessions in a long-lived application
+process. A handle created inside a Task closes when that Task finishes; returning
+it from the Task does not transfer ownership.
+
+The server monitors its creator without linking to it, so a session-process
+failure does not crash borrowers. Simply dropping a handle does not stop its
+process. Explicitly close it, use `with_session`, or rely on creator-exit cleanup
+when that matches your application's lifetime.
+
+In Livebook, reevaluating a read can merge data again; reevaluating a creation
+cell creates another session. Close the previous session before replacing its
+handle. After changing earlier stateful cells or closing a session, rerun the
+workflow from its creation cell. Restarting the runtime also releases sessions.
+
+## Run independent jobs concurrently
+
+Calls on one session run one at a time. A sequence of calls is not a transaction:
+another borrower can change state between loading a schema and validating it.
+Use a separate session for each independent workflow.
+
+The one-off helpers make that straightforward inside Tasks:
+
+```elixir
+[data, data <> turtle_prefixes <> ~s(:bob :email "bob@example.org" .)]
+|> Task.async_stream(
+  &Rudof.query(&1, contacts_query),
+  max_concurrency: 2,
+  timeout: :infinity
+)
+|> Enum.map(fn {:ok, result} -> result end)
+```
+
+Each Task creates and closes its own session. The outer `{:ok, result}` is the
+Task result; `result` is the query's own `{:ok, contacts}` or `{:error, error}`.
+
+Session calls wait without a timeout. A slow operation delays later calls on
+that session, and timing out or killing a caller does not cancel an in-flight
+NIF. Bound concurrency to suit your workload; native work runs on dirty CPU
+schedulers and each graph consumes its own memory. Creator-exit cleanup waits
+for native work to finish.
+
+## Choose your next step
+
+Use `Rudof` for an independent operation, `Session.with_session` for a complete
+multi-step job, and `Session.new`/`new!` plus `close` for state across notebook
+cells or a longer-lived application process.
+
+To explore the wrapper, try adding Carol as a maintainer, leaving her email
+unbound, then repairing the data and checking both the table and validation
+report. Keep querying and validation in Rust; use Elixir to orchestrate the
+workflow and present its results.
+
+* [Rudof tutorial introduction](rudof-tutorial/intro.livemd): learn the data and validation languages.
+* [Public API coverage](../API_COVERAGE.md): find operations, formats and current upstream limitations.
+* [Original Rudof tutorial book](https://rudof-project.github.io/tutorials/intro.html): explore the upstream lessons.

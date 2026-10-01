@@ -1,0 +1,216 @@
+# ShEx
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to ShEx using [rudof](https://rudof-project.github.io/).
+
+## Preliminaries: Install and configure rudof
+
+First, we install and configure `rudof`. The setup cell installs the Elixir wrapper and creates a native session.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## Validating RDF using ShEx
+
+[ShEx (Shape Expressions)](https://shex.io/) is a concise and human-readable language to describe and validate RDF data.
+
+A ShEx schema contains several declarations of shapes and can be defined in several formats: a compact format (ShExC), a JSON-LD format (ShExJ) and an RDF based on (ShExR).
+
+Let's start defining a simple ShEx schema as:
+
+```elixir
+:ok =
+  Session.read_shex(rudof, ~S"""
+  prefix :     <http://example.org/>
+  prefix xsd:  <http://www.w3.org/2001/XMLSchema#>
+
+  :User {
+   :name      xsd:string   ;
+   :birthDate xsd:date     ;
+   :knows     @:User     * ;
+   :worksFor  @:Company  *
+  }
+
+  :Company {
+    :name     xsd:string    ;
+    :code     xsd:integer   ;
+    :employee @:User      *
+  }
+  """)
+```
+
+And let's define some RDF data.
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    prefix : <http://example.org/>
+    prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    prefix xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    :alice a :Person ;
+     :name      "Alice"                ;
+     :birthDate "2005-03-01"^^xsd:date ;
+     :worksFor  :acme                  ;
+     :knows     :bob                   .
+    :bob a :Person   ;
+     :name      "Robert Smith"         ;
+     :birthDate "2003-01-02"^^xsd:date ;
+     :worksFor  :acme                  ;
+     :knows     :alice                 .
+    :acme  a :Company  ;
+     :name      "Acme Inc." ;
+     :code      23          .
+    """)
+```
+
+In order to validate nodes in a graph, ShEx uses a [ShapeMap](https://shex.io/shape-map/), which associates a node selector with a shape.
+
+The simplest shape map is a pair `node@shape`.
+
+Rudof keeps the current shape map in a structure so it can be reused.
+
+The method `read_shapemap(shapemap)` can be used to read a shapemap from a string and store it's value as the currrent shape map.
+
+In the previous example, if we want to validate `:alice` as a `:Person` we can use:
+
+In this Elixir example the declared shape is `:User`, so the selector below uses `:User`; `Session.read_shapemap/2` is the direct wrapper for `read_shapemap(shapemap)`.
+
+```elixir
+:ok = Session.read_shapemap(rudof, ":alice@:User")
+```
+
+Once the ShEx schema and the Shapemap have been added to `rudof`, it is possible to validate the current RDF data with the `validate_shex()` method:
+
+The Elixir wrapper exposes this as `Session.validate_shex/1` and returns a report with the validation results.
+
+```elixir
+{:ok, results} = Session.validate_shex(rudof)
+IO.inspect(results)
+assert results.conforms
+results
+```
+
+If we want to validate `:acme` as a `:Company`, we could do:
+
+The upstream code below selects `:alice` as in the original notebook, so this remains a non-conformant example.
+
+```elixir
+:ok = Session.read_shapemap(rudof, ":alice@:Company")
+{:ok, results} = Session.validate_shex(rudof)
+IO.inspect(results)
+refute results.conforms
+results
+```
+
+The shapemap can contain a list of nodes and shapes, so it is possible to run several validations like:
+
+```elixir
+:ok = Session.read_shapemap(rudof, ":alice@:User, :bob@:User")
+{:ok, results} = Session.validate_shex(rudof)
+IO.inspect(results)
+assert results.conforms
+results
+```
+
+We reset the status of the `ShEx` schema, the `Shapemap` and the current `RDF data` for the next section.
+
+## Validating SPARQL endpoints
+
+It is also possible to validate RDF data which is not local but is available in a SPARQL endpoint like wikidata or dbpedia. Let's start with Wikidata:
+
+This example uses `Session.with_session/1` so the endpoint data, schema and ShapeMap are separate from the local examples.
+
+<!-- livebook:{"break_markdown":true} -->
+
+We can declare a simple shape in Wikidata as follows:
+
+```elixir
+wikidata_endpoint = "https://query.wikidata.org/sparql"
+
+wikidata_schema = ~S"""
+PREFIX : <http://example.org/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+:Researcher { wdt:P31 [ wd:Q5 ] ; wdt:P19 @:Place }
+:Place { wdt:P17 @:Country * }
+:Country {}
+"""
+
+```
+
+```elixir
+Session.with_session(fn remote ->
+  :ok = Session.read_endpoint(remote, wikidata_endpoint)
+  :ok = Session.read_shex(remote, wikidata_schema)
+  :ok = Session.read_shapemap(remote, "wd:Q80@:Researcher")
+  {:ok, report} = Session.validate_shex(remote)
+  Kino.DataTable.new(report.entries)
+end)
+```
+
+## Visualizing ShEx schemas
+
+`rudof` can be used to convert ShEx to diagrams in UML-like style. The converter generates a [PlantUML](https://plantuml.com/) string which can be written to a file and converted to an image using the PlantUML tool.
+
+Now we install the PlantUML tools necessary to process the generated `plant_uml`. In this Livebook, `Rudof.Visualization.plantuml_to_mermaid/1` adapts the generated string for Livebook's Mermaid renderer, so no PlantUML installation is needed.
+
+```elixir
+shex_schema = ~S"""
+prefix : <http://example.org/>
+prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+
+:User {
+ :name     xsd:string  ;
+ :worksFor @:Company * ;
+ :addres   @:Address   ;
+ :knows    @:User
+}
+
+:Company {
+  :name     xsd:string     ;
+  :code     xsd:string     ;
+  :employee @:User
+}
+:Address {
+  :name     xsd:string ;
+  :zip_code xsd:string
+}
+"""
+```
+
+```elixir
+{:ok, plantuml} =
+  Session.show_schema_conversion(rudof, shex_schema, :shex, :uml,
+    input_format: :shexc,
+    output_format: :uml,
+    viz_engine: :plantuml
+  )
+
+IO.puts(plantuml)
+```
+
+```elixir
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+Kino.Mermaid.new(diagram)
+```
+
+`Kino.Mermaid.new/1` renders the converted diagram directly in Livebook.
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+```elixir
+:ok = Session.close(rudof)
+```

@@ -1,0 +1,97 @@
+# Using rudof to compare schemas
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document demonstrates comparing ShEx schemas with [rudof](https://rudof-project.github.io/). The setup cell installs the local Elixir wrapper and Kino; the comparison itself runs in the native library.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## Comparing Schemas
+
+It is possible to use rudof to compare different schemas. For example:
+
+
+```elixir
+before = ~S"""
+PREFIX : <http://example.org/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+:Person { :name xsd:string ; :age xsd:integer ; :weight xsd:float ; :worksFor . }
+"""
+
+after_schema = ~S"""
+PREFIX ex: <http://example.org/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+ex:Person { ex:name xsd:string ; ex:birthDate xsd:date ; ex:worksFor . }
+"""
+```
+
+> Elixir adaptation: Comparison selectors are absolute IRIs. The native result describes structural similarities and differences, not logical equivalence of schemas.
+
+
+```elixir
+native_options = [
+  mode1: :shex,
+  mode2: :shex,
+  format1: :shexc,
+  format2: :shexc,
+  reader_mode: :lax,
+  shape1: "http://example.org/Person",
+  shape2: "http://example.org/Person",
+  output_format: :json
+]
+
+{:ok, json} =
+  Session.show_schema_comparison(rudof, before, after_schema, native_options)
+diff = JSON.decode!(json)
+assert Map.has_key?(diff["equal_properties"], "http://example.org/name")
+assert Map.has_key?(diff["equal_properties"], "http://example.org/worksFor")
+assert Map.has_key?(diff["properties1"], "http://example.org/age")
+assert Map.has_key?(diff["properties1"], "http://example.org/weight")
+assert Map.has_key?(diff["properties2"], "http://example.org/birthDate")
+diff
+```
+
+```elixir
+{:ok, text} =
+  Session.compare_shex(rudof, before, after_schema,
+    shape1: "http://example.org/Person",
+    shape2: "http://example.org/Person",
+    output_format: :internal
+  )
+
+IO.puts(text)
+```
+
+## Additional Elixir examples
+
+These checks extend the original lesson using the wrapper’s native API.
+
+
+```elixir
+{:ok, json} =
+  Rudof.compare_shex(before, before,
+    shape1: "http://example.org/Person",
+    shape2: "http://example.org/Person"
+  )
+same = JSON.decode!(json)
+assert same["properties1"] == %{}
+assert same["properties2"] == %{}
+same
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+
+```elixir
+:ok = Session.close(rudof)
+```

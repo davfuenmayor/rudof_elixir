@@ -1,0 +1,120 @@
+# SHACL
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to [RDF](https://www.w3.org/TR/rdf11-primer/) using [rudof](https://rudof-project.github.io/). This chapter demonstrates validation with [SHACL](https://www.w3.org/TR/shacl/).
+
+## Preliminaries: Install and configure rudof
+
+The library is available as `rudof_elixir` from this checkout. First, we install and configure `rudof`; the setup cell installs the Elixir wrapper and creates a native session.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## Validate using SHACL
+
+Let's read some RDF data.
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    prefix :       <http://example.org/>
+    prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+    prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    prefix schema: <http://schema.org/>
+    prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+    :timbl  rdf:type    :Human ;
+            :name       "Tim Berners-Lee" ;
+            :birthPlace :london ;
+            :birthDate  "1955-06-08"^^xsd:date ;
+            :employer   :CERN ;
+            :knows      _:1 .
+    :london rdf:type    :city, :metropolis ;
+            :country    :UK .
+    :CERN   rdf:type    :Organization .
+    _:1     :birthPlace :Spain .
+    """)
+```
+
+```elixir
+:ok =
+  Session.read_shacl(rudof, ~S"""
+  prefix :       <http://example.org/>
+  prefix sh:     <http://www.w3.org/ns/shacl#>
+  prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+  prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+  prefix schema: <http://schema.org/>
+
+  :Person a sh:NodeShape ;
+   sh:targetClass :Human ;
+   sh:property [ sh:path :name ;
+                 sh:datatype xsd:string;
+                 sh:minCount 1 ; sh:maxCount 1 ] ;
+   sh:property [ sh:path :birthDate ; sh:datatype xsd:date;
+                                      sh:maxCount 1 ] ;
+   sh:property [ sh:path :birthPlace ;
+                 sh:node :Place; sh:maxCount 1 ] ;
+   sh:property [
+      sh:path :employer ;
+      sh:node :Organization
+  ] .
+
+  :Place a sh:NodeShape .
+  :Organization a sh:NodeShape .
+  """)
+```
+
+```elixir
+{:ok, results} = Session.validate_shacl(rudof)
+IO.inspect(results)
+assert results.conforms
+results
+```
+
+The previous data didn't have errors. We can add some data with errors like the following:
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    prefix :       <http://example.org/>
+    prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+    prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    prefix schema: <http://schema.org/>
+    prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+    :wrong1 rdf:type    :Human ;
+            :name       "John" ;
+            :birthDate  "1955-06-08"^^xsd:date, "1956-06-08"^^xsd:date .
+    :wrong2 rdf:type    :Human ;
+            :name       23 ;
+            :birthDate  "1955-06-08"^^xsd:date .
+    """)
+```
+
+```elixir
+{:ok, results} = Session.validate_shacl(rudof)
+IO.inspect(results)
+refute results.conforms
+assert length(results.results) >= 2
+results
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+```elixir
+:ok = Session.close(rudof)
+```

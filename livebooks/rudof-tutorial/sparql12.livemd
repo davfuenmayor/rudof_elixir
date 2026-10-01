@@ -1,0 +1,112 @@
+# SPARQL 1.2
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to [RDF](https://www.w3.org/TR/rdf11-primer/) using [rudof](https://rudof-project.github.io/). This chapter uses SPARQL 1.2 queries over RDF 1.2 data.
+
+## Preliminaries: Install and configure rudof
+
+The library is available as `rudof_elixir` from this checkout.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+
+## Tim Berners-Lee exampl in RDF 1.2
+
+Rudof supports [RDF 1.2](https://www.w3.org/TR/rdf12-primer).
+
+<!-- livebook:{"break_markdown":true} -->
+RDF 1.2 introduces [triple terms](https://www.w3.org/TR/rdf12-primer/#section-triple-terms) which denote statements that can be the object of some triples.
+
+The following example declares some information about a node `:timbl` that indicates that he worked at CERN between 1984 and 1994, and in 1980, and that he obtained the Princess of Asturias Award in 2002 together with Vinton Cerf,
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    prefix : <http://example.org/>
+    prefix sh:     <http://www.w3.org/ns/shacl#>
+    prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+    prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+    prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    :timbl    rdfs:label    "Tim Berners Lee" .
+    _:r       rdf:reifies   <<( :timbl :employer :CERN )>> ;
+              :start        "1984" ;
+              :end          "1994" .
+    _:s       rdf:reifies   <<( :timbl :employer :CERN )>> ;
+              :start        "1980" ;
+              :end          "1980" .
+    _:t       rdf:reifies   <<( :timbl :award :PA )>> ;
+              :time         "2002" ;
+              :togetherWith :vint, :bob, :lawrence  .
+    :vint     rdfs:label    "Vinton Cerf" .
+    :bob      rdfs:label    "Bob kahn" .
+    :lawrence rdfs:label    "Lawrence Roberts" .
+    :PA       rdfs:label    "Princess of Asturias Award" .
+    :CERN     rdfs:label    "CERN" .
+    """)
+```
+
+## SPARQL 1.2
+
+```elixir
+query = ~S"""
+prefix : <http://example.org/>
+prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?person ?employer ?start ?end WHERE {
+  ?r rdf:reifies <<( ?person :employer ?employer )>> ;
+     :start ?start ;
+     :end ?end .
+ }
+"""
+
+{:ok, results} = Session.query(rudof, query)
+assert length(results.rows) == 2
+Kino.DataTable.new(Rudof.Visualization.table_data(results))
+```
+
+> Elixir adaptation: The original query has a semicolon before `OPTIONAL`; this example corrects it to a period.
+
+
+```elixir
+query = ~S"""
+prefix : <http://example.org/>
+prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?person ?award ?togetherPerson ?time WHERE {
+  ?r rdf:reifies <<( ?person :award ?award )>> .
+  OPTIONAL {?r :time ?time }
+  OPTIONAL {
+    ?r            :togetherWith ?togetherWith .
+    ?togetherWith rdfs:label    ?togetherPerson
+  }
+ }
+"""
+
+{:ok, results} = Session.query(rudof, query)
+assert length(results.rows) == 3
+Kino.DataTable.new(Rudof.Visualization.table_data(results))
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+
+```elixir
+:ok = Session.close(rudof)
+```

@@ -1,0 +1,311 @@
+# Generating RDF Data from shapes
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This tutorial demonstrates how to use the Elixir bindings for `rudof_generate` to create synthetic RDF datasets from ShEx and SHACL schemas.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## What You'll Learn
+
+* How to configure the data generator
+* How to generate RDF data from schemas
+* How to control randomness and reproducibility
+* How to customize output formats and options
+* How to use configuration files
+
+## Prerequisites
+
+The setup cell installs the local Elixir wrapper and Kino; it replaces the upstream `pyrudof` installation instructions. The Livebook runtime needs Elixir, Erlang/OTP and the Rust/C toolchain described in the [folder README](README.md). Generation takes schema and output filenames. Executed examples use isolated temporary directories and clean them up even if an assertion fails.
+
+
+## Part 1: Basic Setup
+
+First, let's import the library and check that everything is working. The setup cell aliases `Rudof.Session` and creates the native session. Generation delegates to Rust; no generation algorithm or configuration model is reproduced in Elixir.
+
+
+## Part 2: Simple Example - Generate Data from a ShEx Schema
+
+Let's start with a simple example. We'll use a basic ShEx schema that defines Person and Course entities. The runnable Elixir example below uses a smaller Person shape requiring a string name and integer age, so we can query and validate every generated node; the original multi-shape example remains a future exercise.
+
+`Session.generate/4` takes schema/output paths and returns `:ok`. It writes a statistics sidecar by default and does not load the generated RDF into the session. Seeds are passed through to Rust; assertions check the graph's meaning rather than identical bytes.
+
+
+```elixir
+schema = ~S"""
+PREFIX : <http://example.org/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+:Person { :name xsd:string ; :age xsd:integer }
+"""
+```
+
+```elixir
+scratch = Path.join(System.tmp_dir!(), "rudof-livebook-#{System.unique_integer([:positive])}")
+File.mkdir!(scratch)
+
+try do
+  schema_path = Path.join(scratch, "person.shex")
+  output_path = Path.join(scratch, "people.ttl")
+  File.write!(schema_path, schema)
+  :ok = Session.generate(rudof, schema_path, output_path, entities: 5, seed: 42, parallel: 1)
+  generated = File.read!(output_path)
+
+  {:ok, people} =
+    Rudof.query(
+      generated,
+      "SELECT ?person ?name ?age WHERE {\n  ?person a <http://example.org/Person> ;\n    <http://example.org/name> ?name ; <http://example.org/age> ?age\n}\n"
+    )
+
+  assert length(people.rows) == 5
+
+  shapemap =
+    Enum.map_join(people.rows, ",", fn [node, _, _] -> node <> "@<http://example.org/Person>" end)
+
+  {:ok, report} = Rudof.validate_shex(generated, schema, shapemap)
+  assert report.conforms
+  stats = scratch |> Path.join("people.stats.json") |> File.read!() |> JSON.decode!()
+  Kino.render(stats)
+  Kino.DataTable.new(Rudof.Visualization.table_data(people))
+after
+  File.rm_rf!(scratch)
+end
+```
+
+## Part 3: Advanced Configuration Options
+
+The generator supports many configuration options for fine-tuning data generation. `:entities`, `:seed`, `:parallel` and `:output_format` are direct operation options. `:config_file` passes an upstream TOML/JSON file for additional settings, including compression, statistics and field generators.
+
+Explicit output path/format and supplied count/seed/workers override the corresponding file settings. The executable configuration example appears in Part 5.
+
+
+## Part 4: Cardinality Strategies
+
+Different strategies control how many related entities are created. The native generator supports `Minimum`, `Maximum`, `Random` and `Balanced`; set `generation.cardinality_strategy` in the upstream configuration file. Part 5 runs a `Minimum` example; the full strategy comparison from the source remains a future exercise.
+
+<!-- livebook:{"break_markdown":true} -->
+### Custom Cardinality Configuration
+
+You can also specify custom cardinality ranges for specific properties in your schema. This gives you fine-grained control over how many related entities are generated for each relationship. The larger relationship example from the original tutorial is not executed here; validate generated data when conformance matters.
+
+
+## Part 5: Working with Configuration Files
+
+For complex configurations, you can save and load settings from TOML files.
+
+
+```elixir
+scratch = Path.join(System.tmp_dir!(), "rudof-livebook-#{System.unique_integer([:positive])}")
+File.mkdir!(scratch)
+
+try do
+  schema_path = Path.join(scratch, "person.shex")
+  config_path = Path.join(scratch, "generator.toml")
+  output_path = Path.join(scratch, "people.nt")
+  File.write!(schema_path, schema)
+
+  File.write!(
+    config_path,
+    "[generation]\nentity_count = 3\ncardinality_strategy = \"Minimum\"\n[output]\nwrite_stats = false\n"
+  )
+
+  :ok =
+    Rudof.generate(schema_path, output_path,
+      config_file: config_path,
+      output_format: :ntriples,
+      seed: 42,
+      parallel: 1
+    )
+
+  {:ok, people} =
+    Rudof.query(File.read!(output_path), "SELECT ?s WHERE { ?s a <http://example.org/Person> }",
+      data_format: :ntriples
+    )
+
+  assert length(people.rows) == 3
+  refute File.exists?(Path.join(scratch, "people.stats.json"))
+  Kino.DataTable.new(Rudof.Visualization.table_data(people))
+after
+  File.rm_rf!(scratch)
+end
+```
+
+## Part 7: Different Output Formats
+
+The generator supports multiple RDF output formats. This wrapper exposes Turtle and N-Triples through the `:output_format` option. Part 2 writes Turtle, and the configuration example above writes and queries N-Triples. The source's numbering is retained, including Part 7 before Part 6.
+
+<!-- livebook:{"break_markdown":true} -->
+### Working with SHACL Schemas
+
+The generator also supports SHACL schemas in addition to ShEx. This small SHACL example follows the upstream Person/age shape and passes `schema_format: :shacl` directly to the native generator.
+
+```elixir
+shacl_schema = ~S"""
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:PersonShape
+  a sh:NodeShape ;
+  sh:targetClass ex:Person ;
+  sh:property [ sh:path ex:name ; sh:datatype xsd:string ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minCount 1 ; sh:maxCount 1 ] .
+"""
+
+scratch = Path.join(System.tmp_dir!(), "rudof-livebook-#{System.unique_integer([:positive])}")
+File.mkdir!(scratch)
+
+try do
+  schema_path = Path.join(scratch, "person.ttl")
+  output_path = Path.join(scratch, "people.ttl")
+  File.write!(schema_path, shacl_schema)
+
+  :ok =
+    Session.generate(rudof, schema_path, output_path,
+      schema_format: :shacl,
+      entities: 3,
+      seed: 42,
+      parallel: 1
+    )
+
+  {:ok, people} =
+    Rudof.query(
+      File.read!(output_path),
+      "SELECT ?person WHERE { ?person a <http://example.org/Person> }"
+    )
+
+  assert length(people.rows) == 3
+  Kino.DataTable.new(Rudof.Visualization.table_data(people))
+after
+  File.rm_rf!(scratch)
+end
+```
+
+<!-- livebook:{"break_markdown":true} -->
+### Inspecting Configuration
+
+You can view the current configuration settings using the `show()` method. The Elixir wrapper passes configuration as TOML/JSON text and does not expose a `show()` facade; read it with `File.read!/1` and decode JSON with `JSON.decode!/1`.
+
+<!-- livebook:{"break_markdown":true} -->
+### Explicit Schema Loading Methods
+
+Instead of using the auto-detect `run()` method, you can explicitly load and generate in separate steps. In this wrapper, choose `schema_format: :shex`, `:shacl` or `:auto` when calling `Session.generate/4` or `Rudof.generate/3`; loading and generation are one native operation, and separate generator lifecycle methods are not exposed.
+
+<!-- livebook:{"break_markdown":true} -->
+### Working with JSON Configuration Files
+
+Besides TOML, you can also use JSON configuration files. JSON files are accepted through the same `:config_file` option as TOML. This executes a small configuration using the upstream nested structure; the explicit output path and format are supplied through the wrapper options.
+
+```elixir
+scratch = Path.join(System.tmp_dir!(), "rudof-livebook-#{System.unique_integer([:positive])}")
+File.mkdir!(scratch)
+
+try do
+  schema_path = Path.join(scratch, "person.shex")
+  config_path = Path.join(scratch, "generator.json")
+  output_path = Path.join(scratch, "people.ttl")
+  File.write!(schema_path, schema)
+
+  File.write!(
+    config_path,
+    ~S"""
+    {
+      "generation": {"entity_count": 2, "seed": 42},
+      "output": {"write_stats": false}
+    }
+    """
+  )
+
+  :ok =
+    Rudof.generate(schema_path, output_path,
+      config_file: config_path,
+      output_format: :turtle,
+      parallel: 1
+    )
+
+  {:ok, people} =
+    Rudof.query(
+      File.read!(output_path),
+      "SELECT ?person WHERE { ?person a <http://example.org/Person> }"
+    )
+
+  assert length(people.rows) == 2
+  refute File.exists?(Path.join(scratch, "people.stats.json"))
+  Kino.DataTable.new(Rudof.Visualization.table_data(people))
+after
+  File.rm_rf!(scratch)
+end
+```
+
+<!-- livebook:{"break_markdown":true} -->
+### Entity Distribution
+
+Control the distribution of entity types in your generated dataset. This is useful when you need specific proportions of different entities for realistic testing scenarios. The native generator accepts these settings through the configuration file, but the source's weighted-distribution exercise is not executed here.
+
+<!-- livebook:{"break_markdown":true} -->
+### Parallel Writing for Large Datasets
+
+When generating very large datasets, you can split the output across multiple files for better performance. Upstream configuration can enable `output.parallel_writing` and specify `output.parallel_file_count`. This differs from `:parallel`, which controls generation workers. Multi-file output is not exercised in this notebook; use an isolated output directory when experimenting.
+
+
+## Part 6: Advanced Features
+
+Let's explore some additional advanced features that haven't been covered yet. The preceding subsections identify which are covered by runnable examples or tests.
+
+
+## Summary
+
+In this tutorial, you learned:
+
+### Core Features
+
+1. **Basic Setup** - Import and initialize the Elixir bindings
+2. **Simple Data Generation** - Generate RDF data from ShEx schemas
+3. **Advanced Configuration** - Fine-tune generation with multiple options
+4. **Cardinality Strategies** - Control relationship density (Minimum, Maximum, Random, Balanced)
+5. **Configuration Files** - Save and load settings from TOML files
+
+### Advanced Features
+
+6. **Output Formats** - Generate data in Turtle, NTriples, and other RDF formats
+7. **SHACL Schema Support** - Generate data from SHACL schemas
+8. **Configuration Inspection** - View and debug configuration settings with `show()`
+9. **Explicit Schema Loading** - Load schemas explicitly (ShEx/SHACL) or auto-detect
+10. **JSON Configuration** - Work with JSON configuration files
+11. **Parallel Writing** - Split large datasets across multiple files
+12. **Entity Distribution** - Control proportions of different entity types
+
+The Elixir wrapper uses the native Rudof generator directly. Some upstream features are passed through configuration but are not demonstrated as runnable examples here; the preceding sections identify those limits. The wrapper does not expose the Python `show()` method.
+
+## Next Steps
+
+* Try with your own ShEx or SHACL schemas
+* Generate larger datasets for testing
+* Experiment with parallel processing and parallel writing settings
+* Integrate into your data pipelines
+* Validate generated data against schemas
+* Test different cardinality strategies for your use case
+
+## Resources
+
+* [rudof documentation](https://rudof-project.github.io/rudof/)
+* [Elixir API coverage](../../API_COVERAGE.md)
+* [Wrapper README](../../README.md)
+* [Original generator tutorial](https://rudof-project.github.io/tutorials/rudof_generate.html)
+
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+
+```elixir
+:ok = Session.close(rudof)
+```

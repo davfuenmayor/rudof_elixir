@@ -1,0 +1,185 @@
+# SPARQL
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to [SPARQL](https://www.w3.org/TR/sparql11-query/) using [rudof](https://rudof-project.github.io/).
+
+## Preliminaries
+
+The library is available as `rudof_elixir` from this checkout. The main entry point is the `Rudof.Session` module, through which most of the functionality is provided. `Session.new!/1` accepts a TOML string for session customization.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## SPARQL queries with local RDF data
+
+As SPARQL is an RDF query language, we first need some RDF data.
+
+rudof can run queries against local RDF data or RDF that is available through some SPARQL endpoint.
+
+Let's start with some local RDF data.
+
+```elixir
+rdf = ~S"""
+prefix :    <http://example.org/>
+prefix xsd: <http://www.w3.org/2001/XMLSchema#>
+
+:alice a :Person ;
+ :name      "Alice"                ;
+ :birthDate "2005-03-01"^^xsd:date ;
+ :worksFor  :acme                   .
+:bob a :Person   ;
+ :name      "Robert Smith"         ;
+ :birthDate "2003-01-02"^^xsd:date ;
+ :worksFor  :acme  .
+:acme a :Company ;
+ :name "Acme Inc." .
+"""
+
+:ok = Session.read_data(rudof, rdf)
+```
+
+We can run SPARQL queries as follows:
+
+```elixir
+query = ~S"""
+PREFIX : <http://example.org/>
+
+SELECT ?person ?name ?date ?company WHERE {
+  ?person a          :Person ;
+          :name      ?name   ;
+          :birthDate ?date   ;
+          :worksFor  ?c   .
+  ?c      :name      ?company .
+}
+"""
+
+{:ok, results} = Session.query(rudof, query)
+assert length(results.rows) == 2
+Kino.DataTable.new(Rudof.Visualization.table_data(results))
+```
+
+Show the results:
+
+```elixir
+Kino.DataTable.new(Rudof.Visualization.table_data(results))
+```
+
+Reset the local session so the following examples start with a clean dataset:
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+## SPARQL queries with an endpoint
+
+It is also possible to run SPARQL queries against SPARQL endpoints. SPARQL endpoints are usually identified by an IRI. rudof contains a list of popular SPARQL endpoints which can also be identified by name, like wikidata, whose IRI is: https://query.wikidata.org/sparql
+
+We indicate rudof that we will use Wikidata's endpoint:
+
+This section calls Wikidata directly. `Session.read_endpoint/2` attaches the endpoint as the native data backend, and the SPARQL query runs through Rust. Evaluating this section needs network access; the endpoint and returned results are controlled by Wikidata.
+
+```elixir
+wikidata_endpoint = "https://query.wikidata.org/sparql"
+
+Session.with_session(fn remote ->
+  :ok = Session.read_endpoint(remote, wikidata_endpoint)
+
+  {:ok, results} =
+    Session.query(
+      remote,
+      "PREFIX wd: <http://www.wikidata.org/entity/>\nPREFIX wdt: <http://www.wikidata.org/prop/direct/>\nPREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT ?person ?occupation WHERE {\n  ?p wdt:P31 wd:Q5 ; wdt:P106 ?o ; rdfs:label ?person ; wdt:P19 wd:Q14317 .\n  ?o rdfs:label ?occupation\n  FILTER (lang(?person) = \"en\" && lang(?occupation) = \"en\")\n} LIMIT 10\n"
+    )
+
+  Kino.DataTable.new(Rudof.Visualization.table_data(results))
+end)
+```
+
+## Federated queries
+
+TBD in the original tutorial.
+
+## CONSTRUCT queries
+
+It is also possible to run SPARQL CONSTRUCT queries which can be used to return RDF results.
+
+For example:
+
+<!-- livebook:{"break_markdown":true} -->
+
+First, use the local graph introduced above to see a fully reproducible CONSTRUCT example. `Session.query/2` returns `%{kind: :graph, graph: turtle}`; querying that output checks that both names were constructed.
+
+```elixir
+:ok = Session.read_data(rudof, rdf)
+
+{:ok, %{kind: :graph, graph: graph}} =
+  Session.query(
+    rudof,
+    "PREFIX : <http://example.org/>\nCONSTRUCT { ?person :name ?name }\nWHERE { ?person a :Person ; :name ?name }\n"
+  )
+
+{:ok, %{rows: names}} =
+  Rudof.query(graph, "SELECT ?s ?name WHERE { ?s <http://example.org/name> ?name }")
+
+assert length(names) == 2
+IO.puts(graph)
+```
+
+This runs the upstream Wikidata CONSTRUCT query against the same endpoint. The returned RDF graph is serialized by the native library; Elixir only displays it.
+
+```elixir
+Session.with_session(fn remote ->
+  :ok = Session.read_endpoint(remote, wikidata_endpoint)
+
+  query = ~S"""
+  PREFIX wd:  <http://www.wikidata.org/entity/>
+  PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+  PREFIX :    <http://example.org/>
+
+  CONSTRUCT {
+     ?p a     :Person ;
+        :name ?person ;
+        :occupation ?occupation
+  } WHERE {
+      ?p wdt:P31 wd:Q5 ;
+         wdt:P106 ?o ;
+         rdfs:label ?person ;
+         wdt:P19 wd:Q14317 .
+    ?o rdfs:label ?occupation
+    FILTER (lang(?person) = "en" && lang(?occupation) = "en")
+  }
+  LIMIT 10
+  """
+
+  {:ok, %{kind: :graph, graph: graph}} = Session.query(remote, query)
+  IO.puts(graph)
+end)
+```
+
+## References
+
+### Resources for learning SPARQL
+
+* [Learning SPARQL](https://learningsparql.com/) book and blog by Bob Ducharne.
+* [SPARQL tutorial](https://www.wikidata.org/wiki/Wikidata:SPARQL_tutorial) from Wikidata
+
+### Lists of SPARQL endpoints
+
+* [SPARQL endpoints](https://www.wikidata.org/wiki/Wikidata:Lists/SPARQL_endpoints) collected in Wikidata
+* [SPARQL endpoints](https://www.w3.org/wiki/SparqlEndpoints) collected at W3C.
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+```elixir
+:ok = Session.close(rudof)
+```

@@ -1,0 +1,29 @@
+# Mix builds, dependencies, generated documentation and test output
+/_build/
+/deps/
+/doc/
+/cover/
+/tmp/
+
+# Rustler builds and copied native binaries
+/native/**/target/
+/priv/native/
+
+# Mix package archives
+/rudof_elixir-*.tar
+*.ez
+
+# Livebook local state
+.livemd_checkpoints/
+*.livemd.autosave
+
+# Language server caches and editor temporary files
+/.elixir_ls/
+/.expert/
+*.swp
+*.swo
+
+# Runtime crash dumps and OS metadata
+erl_crash.dump
+.DS_Store
+Thumbs.db

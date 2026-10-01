@@ -1,0 +1,77 @@
+# Service descriptions
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to [RDF](https://www.w3.org/TR/rdf11-primer/) using [rudof](https://rudof-project.github.io/). This chapter focuses on SPARQL service descriptions and [VoID](https://www.w3.org/TR/void/) metadata.
+
+## Preliminaries: Install and configure rudof
+
+The library is available as `rudof_elixir` from this checkout. The main entry point is the `Rudof.Session` module, through which most of the functionality is provided. Pass a TOML string to `Session.new!/1` to customize the session.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+
+## Obtaining information about SPARQL endpoints
+
+### When the SPARQL endpoint directly generates the service description in RDF (Uniprot)
+
+<!-- livebook:{"break_markdown":true} -->
+It is possible to get information from SPARQL endpoints that publish [service descriptions](https://www.w3.org/TR/sparql11-service-description/) using the [VoID](https://www.w3.org/TR/void/) vocabulary.
+
+This example fetches UniProt's service description over the network, as the upstream notebook does. `Session.load_service_description/3` delegates URL loading and RDF parsing to Rust.
+
+
+```elixir
+service_url = "https://sparql.uniprot.org/sparql"
+:ok = Session.load_service_description(rudof, {:url, service_url}, format: :turtle, reader_mode: :strict)
+```
+
+Now we can serialize the service description in JSON, for example, as:
+
+The native API returns JSON text; `JSON.decode!/1` makes it convenient to inspect selected fields in Elixir.
+
+
+```elixir
+{:ok, json} = Session.serialize_service_description(rudof)
+service = JSON.decode!(json)
+Map.take(service, ["endpoint", "supported_language", "result_format"])
+```
+
+We also support the conversion from service descriptions to MIE format files:
+
+The native API returns MIE JSON text here; Elixir only decodes and displays it.
+
+
+```elixir
+{:ok, json} = Session.serialize_service_description(rudof, :mie)
+mie = JSON.decode!(json)
+assert mie["schema_info"]["endpoint"] == service["endpoint"]
+mie
+```
+
+## Additional Elixir examples
+
+These checks extend the original lesson using the wrapper’s native API.
+
+
+```elixir
+:ok = Session.reset(rudof, :service_description)
+{:error, %Rudof.Error{kind: :data_error}} = Session.serialize_service_description(rudof)
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+
+```elixir
+:ok = Session.close(rudof)
+```

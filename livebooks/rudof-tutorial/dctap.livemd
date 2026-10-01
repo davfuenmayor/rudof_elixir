@@ -1,0 +1,112 @@
+# Introduction to DCTAP
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to DCTAP using [rudof](https://rudof-project.github.io/).
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+## What is DCTAP?
+
+DCTAP (Dublin Core Tabular Application Profiles) is a model that can be used to define metadata using a tabular format.
+
+In this way, it is possible to define models in CSV which can then be converted to other schema technologies like ShEx or SHACL.
+
+## Converting DCTAP to ShEx
+
+Rudof has support for [DCTAP](https://www.dublincore.org/specifications/dctap/) and can be used to read DCTAP files in CSV or Excel files and convert those models to other schema languages.
+
+<!-- livebook:{"break_markdown":true} -->
+
+DCTAP can be used to represent shapes using a tabular representation using CSV or an spreadsheet format like XLSX. As an example, the following CSV data:
+
+Identifiers use `:Person` rather than bare `Person`: this resolves against rudof's configured empty prefix (`http://example.org/`) instead of the bare-identifier base (`http://default/`). `Session.read_dctap/2` reads CSV source; `Session.read_dctap_file/3` also delegates Excel loading to Rust.
+
+```elixir
+profile = ~S"""
+shapeId,propertyId,Mandatory,Repeatable,valueDatatype,valueShape
+:Person,:name,true,false,xsd:string,
+,:birthdate,false,false,xsd:date,
+,:worksFor,false,true,,:Company
+:Company,:name,true,false,xsd:string,
+,:employee,false,true,,:Person
+"""
+
+:ok = Session.read_dctap(rudof, profile)
+{:ok, json} = Session.serialize_dctap(rudof)
+parsed = JSON.decode!(json)
+assert length(parsed["shapes"]) == 2
+parsed
+```
+
+It is possible to convert the DCTAP obtained to ShEx
+
+```elixir
+{:ok, schema} = Session.convert_schema(rudof, profile, :dctap, :shex)
+IO.puts(schema)
+```
+
+## Validating data with the ShEx generated from DCTAP
+
+> Elixir adaptation: The native report should accept Alice and reject Bob’s numeric name. The wrapper returns report maps rather than formatted validation strings.
+
+```elixir
+:ok = Session.read_shex(rudof, schema)
+
+:ok =
+  Session.read_data(rudof, ~S"""
+  PREFIX : <http://example.org/>
+  PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+  :alice :name "Alice" ; :birthdate "1970-01-01"^^xsd:date ; :worksFor :acme .
+  :acme :name "ACME INC." .
+  :bob :name 23 .
+  """)
+
+:ok = Session.read_shapemap(rudof, ":alice@:Person, :bob@:Person")
+{:ok, report} = Session.validate_shex(rudof)
+refute report.conforms
+assert Enum.any?(report.entries, &(&1.node =~ "alice" and &1.status == :conformant))
+assert Enum.any?(report.entries, &(&1.node =~ "bob" and &1.status == :nonconformant))
+Kino.DataTable.new(report.entries)
+```
+
+## Visualizing DCTAP content as a UML diagrams
+
+> Elixir adaptation: Rudof's native converter produces PlantUML source. `Rudof.Visualization.plantuml_to_mermaid/1` adapts this generated format for Livebook's Mermaid renderer; the second diagram shows the actual validated RDF data.
+
+```elixir
+{:ok, plantuml} =
+  Session.show_schema_conversion(rudof, schema, :shex, :uml,
+    input_format: :shexc,
+    output_format: :uml,
+    viz_engine: :plantuml
+  )
+
+IO.puts(plantuml)
+```
+
+```elixir
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+Kino.Mermaid.new(diagram)
+```
+
+```elixir
+{:ok, diagram} = Rudof.Visualization.data_to_mermaid(rudof)
+Kino.Mermaid.new(diagram)
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+```elixir
+:ok = Session.close(rudof)
+```

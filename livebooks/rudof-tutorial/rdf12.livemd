@@ -1,0 +1,236 @@
+# RDF 1.2
+
+```elixir
+Mix.install(rudof_elixir: [path: Path.expand("../..", __DIR__)], kino: "== 0.19.0")
+```
+
+## Introduction
+
+This document contains a short introduction to [RDF 1.2](https://www.w3.org/TR/rdf12-primer/) using [rudof](https://rudof-project.github.io/).
+
+## Preliminaries: Install and configure rudof
+
+The library is available as `rudof_elixir` from this checkout.
+
+The main entry point is the `Rudof.Session` module, through which most of the functionality is provided. In order to initialize that session, it is possible to pass a TOML string as the `toml_str` option to `Session.new!/1`, a TOML file as `path`, or upstream settings as a keyword list through `config`.
+
+```elixir
+alias Rudof.Session
+import ExUnit.Assertions
+rudof = Session.new!()
+```
+
+
+## Support for RDF 1.2
+
+Reset previous state of `rudof` and remove the temporary file `out.puml` if it exists. This Livebook calls `Session.reset/1`; its Mermaid workflow does not create `out.puml`.
+
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+Rudof has added support for [RDF 1.2](https://www.w3.org/TR/rdf12-primer). It is possible, for example, to load some RDF 1.2 files and visualize them. `Session.serialize_data/2` delegates diagram generation to Rust; the helper translates its PlantUML output for Livebook's Mermaid renderer.
+
+<!-- livebook:{"break_markdown":true} -->
+RDF 1.2 introduces [triple terms](https://www.w3.org/TR/rdf12-primer/#section-triple-terms) which denote statements that can be the object of some triples.
+
+For example, we can state that `:bob` is interested in `:MonaLisa` since `4th October 1998` using the following code:
+
+The source data below describes Alice's belief that Bob knows Dave, since 2025. This corrects the upstream paragraph, which mentions a different Mona Lisa example.
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+     prefix : <http://example.org/>
+     prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+     prefix xsd: <http://www.w3.org/2001/XMLSchema#>
+
+     :aliceBelief a :Statement ;
+        rdf:reifies <<( :bob :knows :dave  )>> ;
+        :since 2025 ;
+        :accordingTo :dave  .
+     
+    """)
+```
+
+```elixir
+{:ok, plantuml} = Session.serialize_data(rudof, :plantuml)
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+
+Kino.Mermaid.new(
+  diagram
+)
+```
+
+Convert the `puml` to an image. In this Livebook, `Rudof.Visualization.plantuml_to_mermaid/1` adapts Rudof's generated PlantUML for Livebook's Mermaid renderer instead of creating an image file.
+
+The preceding cell displays the graph with Mermaid. We can also inspect the generated Mermaid source:
+
+
+```elixir
+IO.puts(diagram)
+```
+
+In [RDF 1.2 turtle syntax](https://www.w3.org/TR/rdf12-turtle/), there are several possibilities to define triple terms.
+
+<!-- livebook:{"break_markdown":true} -->
+### Declaring triple terms directly
+
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+A triple term can be declared enclosing it between `<<(` and `)>>`. For example:
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    PREFIX :    <http://www.example.org/>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    _:e38  :familyName                     "Smith" .
+    _:anno rdf:reifies <<( _:e38 :jobTitle "Designer" )>> .
+    _:anno :accordingTo                     :eric .
+     
+    """)
+```
+
+```elixir
+{:ok, plantuml} = Session.serialize_data(rudof, :plantuml)
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+
+Kino.Mermaid.new(
+  diagram
+)
+```
+
+### Reifying triples
+
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+Enclosing a triple between `<<` and `>>`, is a syntactic sugar that declares that there is a reifier whose object is that triple and that can be used to add more declarations about that reifier.
+
+For example:
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+     PREFIX :    <http://www.example.org/>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    :employee38 :familyName "Smith" .
+    << :employee38 :jobTitle "Assistant Designer" >> :accordingTo :employee22 .
+     
+    """)
+```
+
+```elixir
+{:ok, plantuml} = Session.serialize_data(rudof, :plantuml)
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+
+Kino.Mermaid.new(
+  diagram
+)
+```
+
+### Annotation syntax
+
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+It is also possible to use the annotation syntax where a statement can be annotated with `{|` and `|}` as follows:
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+     PREFIX : <http://example.com/>
+     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+     :alice :name "Alice" ~ :t {|
+       :statedBy :bob ;
+       :recorded "2021-07-07"^^xsd:date
+     |} .
+     
+    """)
+```
+
+```elixir
+{:ok, plantuml} = Session.serialize_data(rudof, :plantuml)
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+
+Kino.Mermaid.new(
+  diagram
+)
+```
+
+Notice that in the visualization, we differentiate between a statement that is part of the graph which is represented by a box from a statement that is not part of the graph, which is represented by a cloud symbol. The Livebook Mermaid adaptation represents quoted and annotated statements with distinct nodes and dashed component links; those links do not add asserted RDF facts.
+
+
+## Tim Berners-Lee's example
+
+```elixir
+:ok = Session.reset(rudof)
+```
+
+Example declaring that Tim Berners-Lee worked for the CERN between 1984 and 1994 and in 1980, and that he received the Princess of Asturias Award in 2002 together with Vinton-Cerf.
+
+
+```elixir
+:ok =
+  Session.read_data(
+    rudof,
+    ~S"""
+    prefix : <http://example.org/>
+    prefix sh:     <http://www.w3.org/ns/shacl#>
+    prefix xsd:    <http://www.w3.org/2001/XMLSchema#>
+    prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+
+    :timbl rdfs:label "Tim Berners Lee" ;
+           :employer :CERN {| :start "1984" ;
+                              :end   "1994" |}
+                           {| :start "1980" ;
+                              :end   "1980" |} ;
+           :award :PA {| :time "2002" ;
+                         :togetherWith :vint |} .
+    :vint  rdfs:label "Vinton Cerf" .
+    """)
+```
+
+Visualization:
+
+
+```elixir
+{:ok, plantuml} = Session.serialize_data(rudof, :plantuml)
+{:ok, diagram} = Rudof.Visualization.plantuml_to_mermaid(plantuml)
+
+Kino.Mermaid.new(
+  diagram
+)
+```
+
+## Close the session
+
+Release the native state when finished. To revisit earlier cells, evaluate from the beginning.
+
+
+```elixir
+:ok = Session.close(rudof)
+```

@@ -1,0 +1,32 @@
+# Shaping Knowledge Graphs
+
+## Introduction
+
+This collection of Livebooks showcases the `rudof_elixir` wrapper.
+
+It draws upon the original tutorial: [Shaping Knowledge Graphs Jupyter book](https://rudof-project.github.io/tutorials/intro.html) which introduces knowledge graph concepts using [Rudof](https://rudof-project.github.io/rudof/).
+
+Click a chapter to open it in Livebook. Each chapter runs as its own notebook session.
+
+## About this adaptation
+
+Original [tutorial](https://rudof-project.github.io/tutorials/) by Jose Emilio Labra Gayo and the Rudof tutorial contributors.
+
+The examples have been adapted to use the Elixir wrapper (see __README.md__ in repo for details).
+
+__Note:__ 
+Rudof is also available as a [command line tool](https://rudof-project.github.io/rudof/overview.html) for which the authors provide [binaries in Windows, Linux and Mac](https://github.com/rudof-project/rudof/releases). Moreover, the [rudof](https://rudof-project.github.io/) library also contains Python bindings which are [publised in pypi](https://pypi.org/project/pyrudof/). The documentation for the Python bindings is available [here](https://pyrudof.readthedocs.io/en/latest/).
+
+## Chapters
+
+* [Short introduction to Rudof](rudof.livemd)
+* [RDF](rdf.livemd)
+* [SPARQL](sparql.livemd)
+* [ShEx](shex.livemd)
+* [SHACL](shacl.livemd)
+* [Introduction to DCTAP](dctap.livemd)
+* [RDF 1.2](rdf12.livemd)
+* [SPARQL 1.2](sparql12.livemd)
+* [Using rudof to compare schemas](compare.livemd)
+* [Service descriptions](service_description.livemd)
+* [Generating RDF Data from shapes](rudof_generate.livemd)
