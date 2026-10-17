@@ -4,7 +4,8 @@ defmodule Rudof.Native do
     otp_app: :rudof_elixir,
     crate: "rudof_nif",
     binaries: ["rudof_render"],
-    mode: if(Mix.env() == :prod, do: :release, else: :debug)
+    skip_compilation?: true,
+    load_from: {:rudof_elixir, "priv/native/rudof_nif"}
 
   def api_call(_session, _operation, _options), do: :erlang.nif_error(:nif_not_loaded)
   def object_text(_reference, _debug), do: :erlang.nif_error(:nif_not_loaded)

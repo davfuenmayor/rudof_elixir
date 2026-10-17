@@ -25,5 +25,7 @@
 
 # Runtime crash dumps and OS metadata
 erl_crash.dump
+*.exe.stackdump
 .DS_Store
 Thumbs.db
+Desktop.ini
